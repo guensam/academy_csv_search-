@@ -73,6 +73,12 @@ MUSIC_PIANO_KEYWORDS: tuple[str, ...] = (
     "클래식피아노",
 )
 
+# 학원명 제외 키워드 (하나라도 포함되면 제외)
+EXCLUDE_ACADEMY_NAME_KEYWORDS: tuple[str, ...] = (
+    "드럼",
+    "기타",
+)
+
 # 등록상태: True이면 개원만 포함 (컬럼이 있을 때만 적용)
 FILTER_ACTIVE_STATUS_ONLY = True
 # 허용할 등록상태명 (기본: 개원만)
@@ -658,6 +664,39 @@ def filter_by_music_piano_keywords(
     return df.loc[mask].copy()
 
 
+def exclude_by_academy_name_keywords(
+    df: pd.DataFrame,
+    column_map: Mapping[str, str],
+    exclude_keywords: tuple[str, ...] = EXCLUDE_ACADEMY_NAME_KEYWORDS,
+) -> pd.DataFrame:
+    """
+    학원명에 제외 키워드(예: 드럼, 기타)가 하나라도 포함된 행을 제외합니다.
+    추가로 순수 미술 학원 (미술은 포함하되 음악/피아노는 없는 경우)도 제외합니다.
+    """
+    if df.empty:
+        return df
+
+    logical_df = _rename_to_logical(df, column_map)
+    if "학원명" not in logical_df.columns:
+        return df.copy()
+
+    academy_name = logical_df["학원명"].astype(str)
+    exclude_mask = pd.Series(False, index=df.index)
+    
+    if exclude_keywords:
+        for keyword in exclude_keywords:
+            exclude_mask = exclude_mask | academy_name.str.contains(keyword, regex=False, na=False)
+            
+    # 미술만 하는 학원 제외 로직 추가
+    has_art = academy_name.str.contains("미술", regex=False, na=False)
+    has_music = academy_name.str.contains("음악|피아노", regex=True, na=False)
+    pure_art_mask = has_art & (~has_music)
+    
+    exclude_mask = exclude_mask | pure_art_mask
+
+    return df.loc[~exclude_mask].copy()
+
+
 def filter_by_active_status(
     df: pd.DataFrame,
     column_map: Mapping[str, str],
@@ -769,13 +808,17 @@ def _print_sample(df: pd.DataFrame, n: int = 5) -> None:
         print(sample.to_string(index=False))
 
 
-def main() -> None:
+def main(gui_region: Optional[str] = None) -> None:
     """입력 CSV 로드 → 필터 → 정제 → Excel 저장까지 오케스트레이션합니다."""
     print("=" * 60)
     print("학원 CSV 지역·음악/피아노 검색 도구")
     print("=" * 60)
 
-    raw_region = input("검색할 지역명을 입력하세요 (예: 안산시, 강남구): ").strip()
+    if gui_region is None:
+        raw_region = input("검색할 지역명을 입력하세요 (예: 안산시, 강남구): ").strip()
+    else:
+        raw_region = gui_region.strip()
+
     if not raw_region:
         print("오류: 지역명이 비어 있습니다.", file=sys.stderr)
         sys.exit(1)
@@ -810,7 +853,10 @@ def main() -> None:
     df_music = filter_by_music_piano_keywords(df_region, column_map)
     n_after_music = len(df_music)
 
-    df_status = filter_by_active_status(df_music, column_map)
+    df_excluded = exclude_by_academy_name_keywords(df_music, column_map)
+    n_after_exclude = len(df_excluded)
+
+    df_status = filter_by_active_status(df_excluded, column_map)
     n_after_status = len(df_status)
 
     df_final = clean_result(df_status, column_map)
@@ -820,8 +866,9 @@ def main() -> None:
     print(f"1. 전체 원본 행 수: {n_total}")
     print(f"2. 지역 필터 적용 후 행 수: {n_after_region}")
     print(f"3. 업종(음악/피아노) 필터 적용 후 행 수: {n_after_music}")
-    print(f"4. 등록상태 필터 적용 후 행 수: {n_after_status}")
-    print(f"5. 최종 정제 후 행 수: {n_final}")
+    print(f"4. 학원명 제외(드럼/기타) 필터 적용 후 행 수: {n_after_exclude}")
+    print(f"5. 등록상태 필터 적용 후 행 수: {n_after_status}")
+    print(f"6. 최종 정제 후 행 수: {n_final}")
 
     _print_sample(df_final, 5)
 
